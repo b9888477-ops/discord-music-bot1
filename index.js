@@ -1,194 +1,324 @@
-require('dotenv').config();
-const express = require('express');
-const mongoose = require('mongoose');
-const {
-  Client,
-  GatewayIntentBits,
-  REST,
-  Routes,
-  SlashCommandBuilder,
-  EmbedBuilder,
-  PermissionFlagsBits
+const { 
+    Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, 
+    EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder 
 } = require('discord.js');
-const { DisTube } = require('distube');
-const { YouTubePlugin } = require('@distube/youtube');
-const { YtDlpPlugin } = require('@distube/yt-dlp');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
+const play = require('play-dl');
+const express = require('express');
+require('dotenv').config();
 
-// =======================================================
-// 1. WEB SERVER (សម្រាប់រត់ 24/7 លើ Render)
-// =======================================================
+// --- 1. EXPRESS SERVER (ចាំបាច់សម្រាប់ Render មិនឱ្យបែក Port Error) ---
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.get('/', (req, res) => res.send('🎵 Discord Music Bot is Online & Fixed!'));
-app.listen(PORT, () => console.log(`✅ [Server] Web Server running on port ${PORT}`));
-
-// =======================================================
-// 2. MONGODB (DATABASE)
-// =======================================================
-const DEFAULT_PREFIX = 'v!';
-const prefixCache = new Map();
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://discordmusicbot:Wearedevteam@cluster0.8vinh6j.mongodb.net/discordbot?retryWrites=true&w=majority';
-
-const prefixSchema = new mongoose.Schema({
-  guildId: { type: String, required: true, unique: true },
-  prefix: { type: String, required: true, default: DEFAULT_PREFIX }
+app.get('/', (req, res) => {
+    res.send('🤖 Discord Music Bot is running smoothly on Render!');
 });
-const PrefixModel = mongoose.model('Prefix', prefixSchema);
 
-mongoose.connect(MONGODB_URI)
-  .then(() => console.log('✅ [MongoDB] Connected successfully!'))
-  .catch(err => console.error('❌ [MongoDB] Error:', err));
+app.listen(PORT, () => {
+    console.log(`🌐 Web Server is running on port ${PORT}`);
+});
 
-async function getPrefix(guildId) {
-  if (prefixCache.has(guildId)) return prefixCache.get(guildId);
-  try {
-    const data = await PrefixModel.findOne({ guildId });
-    const p = data ? data.prefix : DEFAULT_PREFIX;
-    prefixCache.set(guildId, p);
-    return p;
-  } catch {
-    return DEFAULT_PREFIX;
-  }
-}
+// --- 2. SPOTIFY TOKEN SETUP ---
+play.setToken({
+    spotify: {
+        client_id: process.env.SPOTIFY_CLIENT_ID,
+        client_secret: process.env.SPOTIFY_CLIENT_SECRET,
+        refresh_token: '',
+        market: 'US'
+    }
+});
 
-// =======================================================
-// 3. DISCORD CLIENT
-// =======================================================
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ]
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
+    ]
 });
 
-// =======================================================
-// 4. DISTUBE (MUSIC ENGINE - COMPATIBLE WITH V5)
-// =======================================================
-let youtubeCookies = undefined;
-if (process.env.YOUTUBE_COOKIES) {
-  try {
-    youtubeCookies = JSON.parse(process.env.YOUTUBE_COOKIES);
-    console.log('✅ [Cookies] YouTube Cookies Loaded!');
-  } catch (err) {
-    console.error('❌ [Cookies] Error parsing YOUTUBE_COOKIES. It must be valid JSON.');
-  }
+const queues = new Map();
+
+class ServerQueue {
+    constructor(textChannel, voiceChannel) {
+        this.textChannel = textChannel;
+        this.voiceChannel = voiceChannel;
+        this.connection = null;
+        this.player = createAudioPlayer();
+        this.songs = [];
+        this.playing = true;
+        this.loop = false;
+
+        this.player.on(AudioPlayerStatus.Idle, () => {
+            if (this.loop && this.songs.length > 0) {
+                const playedSong = this.songs.shift();
+                this.songs.push(playedSong);
+            } else {
+                this.songs.shift();
+            }
+            this.playNext();
+        });
+
+        this.player.on('error', error => console.error('Player Error:', error));
+    }
+
+    async playNext() {
+        if (this.songs.length === 0) {
+            if (this.connection) this.connection.destroy();
+            queues.delete(this.textChannel.guild.id);
+            return this.textChannel.send('🎵 ចម្រៀងក្នុង Queue អស់ហើយ! Bot បានចាកចេញពី Voice Channel។');
+        }
+
+        const song = this.songs[0];
+        try {
+            let stream;
+            if (play.sp_validate(song.url) === 'track' || song.isSearch) {
+                stream = await play.stream(`${song.title}`, { source: { soundcloud: "tracks" } });
+            } else if (play.so_validate(song.url)) {
+                stream = await play.stream(song.url);
+            } else {
+                stream = await play.stream(song.title, { source: { soundcloud: "tracks" } });
+            }
+
+            const resource = createAudioResource(stream.stream, { inputType: stream.type });
+            this.player.play(resource);
+
+            // Controls UI (Buttons)
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('pause_resume').setLabel('⏯️ Pause/Resume').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId('skip').setLabel('⏭️ Skip').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('stop').setLabel('⏹️ Stop').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId('shuffle').setLabel('🔀 Shuffle').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('loop').setLabel(this.loop ? '🔁 Loop: ON' : '🔁 Loop: OFF').setStyle(ButtonStyle.Success)
+            );
+
+            const embed = new EmbedBuilder()
+                .setTitle('🎶 កំពុងលេង (Now Playing)')
+                .setDescription(`**[${song.title}](${song.url})**\nស្នើដោយ៖ ${song.requestedBy}`)
+                .setColor('#1DB954');
+
+            this.textChannel.send({ embeds: [embed], components: [row] });
+        } catch (err) {
+            console.error(err);
+            this.textChannel.send(`⚠️ មានបញ្ហាក្នុងการលេងបទ៖ **${song.title}**! កំពុង Skip...`);
+            this.songs.shift();
+            this.playNext();
+        }
+    }
 }
 
-const distube = new DisTube(client, {
-  plugins: [
-    new YouTubePlugin({ cookies: youtubeCookies }),
-    new YtDlpPlugin({ update: true }) // ជួយ Bypass YouTube Block លើ Cloud Hosting
-  ],
-  emitNewSongOnly: true
-});
-
-// =======================================================
-// 5. COMMANDS & EVENTS
-// =======================================================
+// --- 3. SLASH COMMANDS ---
 const commands = [
-  new SlashCommandBuilder()
-    .setName('prefix')
-    .setDescription('Manage the bot prefix')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addSubcommand(sub =>
-      sub.setName('set')
-         .setDescription('Set a new prefix')
-         .addStringOption(opt => opt.setName('new_prefix').setDescription('Ex: v!').setRequired(true))
-    )
-];
+    new SlashCommandBuilder().setName('play').setDescription('លេងចម្រៀងពី Spotify/SoundCloud/Search')
+        .addStringOption(opt => opt.setName('query').setDescription('ឈ្មោះបទ ឬ Link').setRequired(true)),
+    new SlashCommandBuilder().setName('search').setDescription('ស្វែងរកចម្រៀង ៥ បទ ហើយជ្រើសរើសលេង')
+        .addStringOption(opt => opt.setName('query').setDescription('ឈ្មោះបទ').setRequired(true)),
+    new SlashCommandBuilder().setName('skip').setDescription('Skip បទចម្រៀងបច្ចុប្បន្ន'),
+    new SlashCommandBuilder().setName('stop').setDescription('បញ្ឈប់ចម្រៀង និងលុប Queue'),
+    new SlashCommandBuilder().setName('queue').setDescription('មើលបញ្ជីចម្រៀង (Queue)'),
+    new SlashCommandBuilder().setName('shuffle').setDescription('ច្របល់បញ្ជីចម្រៀង'),
+    new SlashCommandBuilder().setName('loop').setDescription('បើក/បិទ Loop បទចម្រៀង'),
+].map(c => c.toJSON());
 
-client.once('ready', async () => {
-  console.log(`✅ [Discord] Logged in as ${client.user.tag}`);
-  try {
-    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log('✅ [Commands] Slash commands registered!');
-  } catch (err) {
-    console.error('❌ [Commands] Failed to register:', err);
-  }
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+client.on('ready', async () => {
+    console.log(`✅ Bot Online: ${client.user.tag}`);
+    try {
+        await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
+        console.log('✅ Registered Slash Commands successfully!');
+    } catch (e) { console.error(e); }
 });
 
+// --- 4. INTERACTION HANDLER ---
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName === 'prefix' && interaction.options.getSubcommand() === 'set') {
-    const newPrefix = interaction.options.getString('new_prefix').trim();
-    try {
-      await PrefixModel.findOneAndUpdate({ guildId: interaction.guildId }, { prefix: newPrefix }, { upsert: true });
-      prefixCache.set(interaction.guildId, newPrefix);
-      return interaction.reply(`✅ Prefix បានប្តូរទៅជា៖ \`${newPrefix}\``);
-    } catch (err) {
-      return interaction.reply({ content: '❌ មិនអាចប្តូរ Prefix បានទេ។', ephemeral: true });
+    if (interaction.isChatInputCommand()) {
+        const { commandName, options, member, guildId, channel } = interaction;
+        const voiceChannel = member.voice.channel;
+
+        if (['play', 'search'].includes(commandName) && !voiceChannel) {
+            return interaction.reply({ content: '❌ អ្នកត្រូវចូល Voice Channel ជាមុនសិន!', ephemeral: true });
+        }
+
+        let serverQueue = queues.get(guildId);
+
+        if (commandName === 'play' || commandName === 'search') {
+            await interaction.deferReply();
+            const query = options.getString('query');
+
+            if (commandName === 'search') {
+                const results = await play.search(query, { limit: 5, source: { soundcloud: 'tracks' } });
+                if (!results || results.length === 0) return interaction.editReply('❌ រកមិនឃើញចម្រៀងទេ!');
+
+                const selectMenu = new StringSelectMenuBuilder()
+                    .setCustomId('select_song')
+                    .setPlaceholder('ជ្រើសរើសចម្រៀងមួយ...')
+                    .addOptions(results.map((track, i) => ({
+                        label: `${i + 1}. ${track.name}`.slice(0, 100),
+                        value: track.url,
+                        description: `Duration: ${track.durationRaw || 'N/A'}`
+                    })));
+
+                const row = new ActionRowBuilder().addComponents(selectMenu);
+                return interaction.editReply({ content: '🔍 **លទ្ធផលស្វែងរក៖**', components: [row] });
+            }
+
+            let songsToAdd = [];
+            if (play.sp_validate(query) === 'track') {
+                const spData = await play.spotify(query);
+                songsToAdd.push({
+                    title: `${spData.name} - ${spData.artists.map(a => a.name).join(', ')}`,
+                    url: query,
+                    requestedBy: member.user.username
+                });
+            } else if (play.sp_validate(query) === 'playlist' || play.sp_validate(query) === 'album') {
+                const spList = await play.spotify(query);
+                const allTracks = await spList.all_tracks();
+                songsToAdd = allTracks.map(t => ({
+                    title: `${t.name} - ${t.artists.map(a => a.name).join(', ')}`,
+                    url: t.url,
+                    requestedBy: member.user.username,
+                    isSearch: true
+                }));
+            } else {
+                songsToAdd.push({
+                    title: query,
+                    url: query,
+                    requestedBy: member.user.username,
+                    isSearch: true
+                });
+            }
+
+            if (!serverQueue) {
+                serverQueue = new ServerQueue(channel, voiceChannel);
+                queues.set(guildId, serverQueue);
+                serverQueue.songs.push(...songsToAdd);
+
+                const connection = joinVoiceChannel({
+                    channelId: voiceChannel.id,
+                    guildId: guildId,
+                    adapterCreator: guildId => guildId, // fixed fallback
+                    adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+                });
+                serverQueue.connection = connection;
+                connection.subscribe(serverQueue.player);
+                serverQueue.playNext();
+
+                interaction.editReply(`✅ បានបន្ថែម **${songsToAdd.length} បទ** ចូល Queue!`);
+            } else {
+                serverQueue.songs.push(...songsToAdd);
+                interaction.editReply(`✅ បានបន្ថែម **${songsToAdd.length} បទ** ចូល Queue!`);
+            }
+        }
+
+        if (commandName === 'skip') {
+            if (!serverQueue) return interaction.reply('❌ គ្មានចម្រៀងកំពុងលេងទេ!');
+            serverQueue.player.stop();
+            interaction.reply('⏭️ Skipped!');
+        }
+
+        if (commandName === 'stop') {
+            if (!serverQueue) return interaction.reply('❌ គ្មានចម្រៀងកំពុងលេងទេ!');
+            serverQueue.songs = [];
+            serverQueue.player.stop();
+            if (serverQueue.connection) serverQueue.connection.destroy();
+            queues.delete(guildId);
+            interaction.reply('⏹️ Stopped and cleared queue!');
+        }
+
+        if (commandName === 'queue') {
+            if (!serverQueue || serverQueue.songs.length === 0) return interaction.reply('❌ Queue ទទេ!');
+            const queueList = serverQueue.songs.slice(0, 10).map((s, i) => `${i + 1}. **${s.title}**`).join('\n');
+            const embed = new EmbedBuilder()
+                .setTitle('📜 Queue (Top 10)')
+                .setDescription(queueList)
+                .setColor('#0099FF');
+            interaction.reply({ embeds: [embed] });
+        }
+
+        if (commandName === 'shuffle') {
+            if (!serverQueue || serverQueue.songs.length < 2) return interaction.reply('❌ ចម្រៀងមិនគ្រប់គ្រាន់ដើម្បី Shuffle ទេ!');
+            const current = serverQueue.songs.shift();
+            serverQueue.songs.sort(() => Math.random() - 0.5);
+            serverQueue.songs.unshift(current);
+            interaction.reply('🔀 Shuffled!');
+        }
+
+        if (commandName === 'loop') {
+            if (!serverQueue) return interaction.reply('❌ គ្មានចម្រៀងកំពុងលេងទេ!');
+            serverQueue.loop = !serverQueue.loop;
+            interaction.reply(`🔁 Loop: **${serverQueue.loop ? 'ON' : 'OFF'}**`);
+        }
     }
-  }
-});
 
-client.on('messageCreate', async (message) => {
-  if (message.author.bot || !message.guild) return;
-  const prefix = await getPrefix(message.guild.id);
-  if (!message.content.startsWith(prefix)) return;
+    // BUTTON & SELECT MENU HANDLERS
+    if (interaction.isButton()) {
+        const serverQueue = queues.get(interaction.guildId);
+        if (!serverQueue) return interaction.reply({ content: '❌ គ្មានចម្រៀងកំពុងលេងទេ!', ephemeral: true });
 
-  const args = message.content.slice(prefix.length).trim().split(/ +/g);
-  const command = args.shift()?.toLowerCase();
-  const voiceChannel = message.member?.voice?.channel;
-
-  if (['play', 'p'].includes(command)) {
-    if (!voiceChannel) return message.reply('❌ សូមចូល Voice Channel ជាមុនសិន!');
-    const query = args.join(' ');
-    if (!query) return message.reply(`❌ របៀបប្រើ៖ \`${prefix}play <ឈ្មោះបទ>\``);
-
-    message.channel.send(`🔍 កំពុងស្វែងរក៖ **${query}**...`);
-    try {
-      distube.play(voiceChannel, query, {
-        textChannel: message.channel,
-        member: message.member
-      });
-    } catch (error) {
-      console.error(error);
-      message.channel.send('❌ 有问题ក្នុងព្រឹត្តិការណ៍ចាក់បទនេះ សូមសាកល្បងម្ដងទៀត។');
+        if (interaction.customId === 'pause_resume') {
+            if (serverQueue.playing) {
+                serverQueue.player.pause();
+                serverQueue.playing = false;
+                interaction.reply({ content: '⏸️ Paused!', ephemeral: true });
+            } else {
+                serverQueue.player.unpause();
+                serverQueue.playing = true;
+                interaction.reply({ content: '▶️ Resumed!', ephemeral: true });
+            }
+        } else if (interaction.customId === 'skip') {
+            serverQueue.player.stop();
+            interaction.reply({ content: '⏭️ Skipped!', ephemeral: true });
+        } else if (interaction.customId === 'stop') {
+            serverQueue.songs = [];
+            serverQueue.player.stop();
+            if (serverQueue.connection) serverQueue.connection.destroy();
+            queues.delete(interaction.guildId);
+            interaction.reply({ content: '⏹️ Stopped!', ephemeral: true });
+        } else if (interaction.customId === 'shuffle') {
+            const current = serverQueue.songs.shift();
+            serverQueue.songs.sort(() => Math.random() - 0.5);
+            serverQueue.songs.unshift(current);
+            interaction.reply({ content: '🔀 Shuffled!', ephemeral: true });
+        } else if (interaction.customId === 'loop') {
+            serverQueue.loop = !serverQueue.loop;
+            interaction.reply({ content: `🔁 Loop ${serverQueue.loop ? 'ON' : 'OFF'}!`, ephemeral: true });
+        }
     }
-  }
 
-  else if (['skip', 's'].includes(command)) {
-    const queue = distube.getQueue(message);
-    if (!queue) return message.reply('❌ គ្មានបទកំពុងចាក់ទេ!');
-    try { await distube.skip(message); message.reply('⏭️ រំលងបទ!'); } 
-    catch { message.reply('❌ គ្មានបទបន្ទាប់ទេ!'); }
-  }
+    if (interaction.isStringSelectMenu() && interaction.customId === 'select_song') {
+        const selectedUrl = interaction.values[0];
+        const voiceChannel = interaction.member.voice.channel;
+        if (!voiceChannel) return interaction.reply({ content: '❌ ចូល Voice Channel សិន!', ephemeral: true });
 
-  else if (command === 'stop') {
-    const queue = distube.getQueue(message);
-    if (!queue) return message.reply('❌ គ្មានបទកំពុងចាក់ទេ!');
-    distube.stop(message);
-    message.reply('⏹️ បានបញ្ឈប់!');
-  }
+        await interaction.deferUpdate();
+        let serverQueue = queues.get(interaction.guildId);
 
-  else if (command === 'queue' || command === 'q') {
-    const queue = distube.getQueue(message);
-    if (!queue) return message.reply('❌ បញ្ជី Queue ទទេ!');
-    const q = queue.songs.slice(0, 10).map((song, i) => `${i === 0 ? '▶️' : `**${i}.**`} ${song.name} - \`${song.formattedDuration}\``).join('\n');
-    message.channel.send({ embeds: [new EmbedBuilder().setTitle('🎶 បញ្ជីបទចម្រៀង').setDescription(q).setColor('#5865F2')] });
-  }
+        const songObj = {
+            title: selectedUrl,
+            url: selectedUrl,
+            requestedBy: interaction.user.username
+        };
+
+        if (!serverQueue) {
+            serverQueue = new ServerQueue(interaction.channel, voiceChannel);
+            queues.set(interaction.guildId, serverQueue);
+            serverQueue.songs.push(songObj);
+
+            const connection = joinVoiceChannel({
+                channelId: voiceChannel.id,
+                guildId: interaction.guildId,
+                adapterCreator: interaction.guild.voiceAdapterCreator,
+            });
+            serverQueue.connection = connection;
+            connection.subscribe(serverQueue.player);
+            serverQueue.playNext();
+        } else {
+            serverQueue.songs.push(songObj);
+            interaction.followUp(`✅ បានបន្ថែមចូល Queue!`);
+        }
+    }
 });
-
-// =======================================================
-// 6. DISTUBE MUSIC EVENTS (LOGS & ERRORS)
-// =======================================================
-distube
-  .on('playSong', (queue, song) => {
-    queue.textChannel?.send(`🎶 កំពុងចាក់បទ៖ **${song.name}** \`[${song.formattedDuration}]\` | កម្ម៉ង់ដោយ៖ ${song.user}`);
-  })
-  .on('addSong', (queue, song) => {
-    queue.textChannel?.send(`✅ បានបន្ថែមបទ **${song.name}** \`[${song.formattedDuration}]\` ចូល Queue`);
-  })
-  .on('error', (channel, error) => {
-    console.error('DISTUBE ERROR:', error);
-    if (channel) channel.send(`❌ **បញ្ហាពី YouTube:** \`${error.message.substring(0, 150)}...\``);
-  })
-  .on('disconnect', (queue) => {
-    queue.textChannel?.send('🔌 Bot ត្រូវបានផ្តាច់ចេញពី Voice Channel ហើយ។');
-  });
 
 client.login(process.env.DISCORD_TOKEN);
