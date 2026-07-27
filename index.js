@@ -65,7 +65,7 @@ const client = new Client({
 });
 
 // =======================================================
-// 4. DISTUBE (MUSIC ENGINE - FULLY FIXED)
+// 4. DISTUBE (MUSIC ENGINE - COMPATIBLE WITH V5)
 // =======================================================
 let youtubeCookies = undefined;
 if (process.env.YOUTUBE_COOKIES) {
@@ -80,13 +80,9 @@ if (process.env.YOUTUBE_COOKIES) {
 const distube = new DisTube(client, {
   plugins: [
     new YouTubePlugin({ cookies: youtubeCookies }),
-    new YtDlpPlugin({ update: true }) // <--- ជំនួយការ Bypass YouTube ខ្លាំងបំផុត
+    new YtDlpPlugin({ update: true }) // ជួយ Bypass YouTube Block លើ Cloud Hosting
   ],
-  leaveOnEmpty: false,   // កុំឱ្យរត់ចេញពេលគ្មានអ្នកស្តាប់
-  leaveOnFinish: false,  // កុំឱ្យរត់ចេញពេលចាក់ចប់បទ
-  leaveOnStop: false,    // កុំឱ្យរត់ចេញពេលគេវាយបញ្ជា Stop
-  emitNewSongOnly: true,
-  savePreviousSongs: true
+  emitNewSongOnly: true
 });
 
 // =======================================================
@@ -151,7 +147,7 @@ client.on('messageCreate', async (message) => {
       });
     } catch (error) {
       console.error(error);
-      message.channel.send('❌ មានបញ្ហាក្នុងការចាក់បទនេះ សូមសាកល្បងម្ដងទៀត។');
+      message.channel.send('❌ 有问题ក្នុងព្រឹត្តិការណ៍ចាក់បទនេះ សូមសាកល្បងម្ដងទៀត។');
     }
   }
 
@@ -189,11 +185,10 @@ distube
   })
   .on('error', (channel, error) => {
     console.error('DISTUBE ERROR:', error);
-    // បង្ហាញ Error ច្បាស់ៗចូលក្នុង Discord ដើម្បីងាយស្រួលដឹង
-    if (channel) channel.send(`❌ **បញ្ហាពី YouTube:** \`${error.message.substring(0, 150)}...\` (អាចមកពី YouTube Block លើ Render)`);
+    if (channel) channel.send(`❌ **បញ្ហាពី YouTube:** \`${error.message.substring(0, 150)}...\``);
   })
   .on('disconnect', (queue) => {
-    queue.textChannel?.send('🔌 Bot ត្រូវបានផ្តាច់ចេញពី Voice Channel ហើ់យ។');
+    queue.textChannel?.send('🔌 Bot ត្រូវបានផ្តាច់ចេញពី Voice Channel ហើយ។');
   });
 
 client.login(process.env.DISCORD_TOKEN);
