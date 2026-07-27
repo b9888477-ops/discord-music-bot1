@@ -43,7 +43,7 @@ const prefixes = new Map();
 const DEFAULT_PREFIX = 'v!';
 
 // -------------------------------------------------------------
-// 3. DISTUBE SETUP (FIXED FOR DISTUBE V5)
+// 3. DISTUBE SETUP (FIXED FOR DISTUBE V5 & SAFE COOKIES)
 // -------------------------------------------------------------
 let youtubePluginOptions = {};
 
