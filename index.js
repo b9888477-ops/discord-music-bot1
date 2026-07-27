@@ -43,7 +43,7 @@ const prefixes = new Map();
 const DEFAULT_PREFIX = 'v!';
 
 // -------------------------------------------------------------
-// 3. DISTUBE SETUP WITH SAFE YOUTUBE COOKIES CHECK (FIXED!)
+// 3. DISTUBE SETUP (FIXED FOR DISTUBE V5)
 // -------------------------------------------------------------
 let youtubePluginOptions = {};
 
@@ -65,10 +65,7 @@ const distube = new DisTube(client, {
   plugins: [
     new YouTubePlugin(youtubePluginOptions)
   ],
-  emitNewSongOnly: true,
-  leaveOnEmpty: false,
-  leaveOnStop: false,
-  leaveOnFinish: false
+  emitNewSongOnly: true
 });
 
 // -------------------------------------------------------------
