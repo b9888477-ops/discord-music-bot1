@@ -12,39 +12,33 @@ const {
 } = require('discord.js');
 const { DisTube } = require('distube');
 const { YouTubePlugin } = require('@distube/youtube');
+const { YtDlpPlugin } = require('@distube/yt-dlp');
 
-// -------------------------------------------------------------
-// 1. EXPRESS WEB SERVER FOR 24/7 HOSTING (RENDER)
-// -------------------------------------------------------------
+// =======================================================
+// 1. WEB SERVER (សម្រាប់រត់ 24/7 លើ Render)
+// =======================================================
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.get('/', (req, res) => {
-  res.send('🎵 Discord Music Bot is Online 24/7!');
-});
+app.get('/', (req, res) => res.send('🎵 Discord Music Bot is Online & Fixed!'));
+app.listen(PORT, () => console.log(`✅ [Server] Web Server running on port ${PORT}`));
 
-app.listen(PORT, () => {
-  console.log(`[HTTP Server] Listening on port ${PORT}`);
-});
-
-// -------------------------------------------------------------
-// 2. MONGOOSE DATABASE CONNECTION & SCHEMA
-// -------------------------------------------------------------
+// =======================================================
+// 2. MONGODB (DATABASE)
+// =======================================================
 const DEFAULT_PREFIX = 'v!';
 const prefixCache = new Map();
-
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://discordmusicbot:Wearedevteam@cluster0.8vinh6j.mongodb.net/discordbot?retryWrites=true&w=majority';
 
 const prefixSchema = new mongoose.Schema({
   guildId: { type: String, required: true, unique: true },
   prefix: { type: String, required: true, default: DEFAULT_PREFIX }
 });
-
 const PrefixModel = mongoose.model('Prefix', prefixSchema);
 
 mongoose.connect(MONGODB_URI)
-  .then(() => console.log('✅ Connected to MongoDB successfully!'))
-  .catch(err => console.error('❌ MongoDB Connection Error:', err));
+  .then(() => console.log('✅ [MongoDB] Connected successfully!'))
+  .catch(err => console.error('❌ [MongoDB] Error:', err));
 
 async function getPrefix(guildId) {
   if (prefixCache.has(guildId)) return prefixCache.get(guildId);
@@ -58,9 +52,9 @@ async function getPrefix(guildId) {
   }
 }
 
-// -------------------------------------------------------------
-// 3. DISCORD CLIENT SETUP
-// -------------------------------------------------------------
+// =======================================================
+// 3. DISCORD CLIENT
+// =======================================================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -70,225 +64,136 @@ const client = new Client({
   ]
 });
 
-// -------------------------------------------------------------
-// 4. DISTUBE SETUP (WITH YOUTUBE COOKIES)
-// -------------------------------------------------------------
+// =======================================================
+// 4. DISTUBE (MUSIC ENGINE - FULLY FIXED)
+// =======================================================
 let youtubeCookies = undefined;
-
 if (process.env.YOUTUBE_COOKIES) {
   try {
     youtubeCookies = JSON.parse(process.env.YOUTUBE_COOKIES);
-    console.log('✅ YouTube Cookies loaded successfully!');
+    console.log('✅ [Cookies] YouTube Cookies Loaded!');
   } catch (err) {
-    console.error('❌ YOUTUBE_COOKIES format error. Make sure it is valid JSON Array.');
+    console.error('❌ [Cookies] Error parsing YOUTUBE_COOKIES. It must be valid JSON.');
   }
 }
 
 const distube = new DisTube(client, {
   plugins: [
-    new YouTubePlugin({
-      cookies: youtubeCookies
-    })
+    new YouTubePlugin({ cookies: youtubeCookies }),
+    new YtDlpPlugin({ update: true }) // <--- ជំនួយការ Bypass YouTube ខ្លាំងបំផុត
   ],
-  emitNewSongOnly: true
+  leaveOnEmpty: false,   // កុំឱ្យរត់ចេញពេលគ្មានអ្នកស្តាប់
+  leaveOnFinish: false,  // កុំឱ្យរត់ចេញពេលចាក់ចប់បទ
+  leaveOnStop: false,    // កុំឱ្យរត់ចេញពេលគេវាយបញ្ជា Stop
+  emitNewSongOnly: true,
+  savePreviousSongs: true
 });
 
-// -------------------------------------------------------------
-// 5. REGISTER SLASH COMMANDS (/prefix set)
-// -------------------------------------------------------------
+// =======================================================
+// 5. COMMANDS & EVENTS
+// =======================================================
 const commands = [
   new SlashCommandBuilder()
     .setName('prefix')
-    .setDescription('Manage the bot prefix for this server')
+    .setDescription('Manage the bot prefix')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addSubcommand(sub =>
-      sub
-        .setName('set')
-        .setDescription('Set a custom command prefix for this server')
-        .addStringOption(opt =>
-          opt
-            .setName('new_prefix')
-            .setDescription('Example: leng or v!')
-            .setRequired(true)
-        )
+      sub.setName('set')
+         .setDescription('Set a new prefix')
+         .addStringOption(opt => opt.setName('new_prefix').setDescription('Ex: v!').setRequired(true))
     )
 ];
 
-const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-
 client.once('ready', async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  
+  console.log(`✅ [Discord] Logged in as ${client.user.tag}`);
   try {
-    console.log('🔄 Registering global slash commands...');
-    await rest.put(
-      Routes.applicationCommands(client.user.id),
-      { body: commands }
-    );
-    console.log('✅ Slash commands registered successfully!');
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    console.log('✅ [Commands] Slash commands registered!');
   } catch (err) {
-    console.error('❌ Failed to register slash commands:', err);
+    console.error('❌ [Commands] Failed to register:', err);
   }
 });
 
-// -------------------------------------------------------------
-// 6. SLASH COMMAND INTERACTION HANDLER (/prefix set)
-// -------------------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
-
-  if (interaction.commandName === 'prefix') {
-    const subcommand = interaction.options.getSubcommand();
-    
-    if (subcommand === 'set') {
-      const newPrefix = interaction.options.getString('new_prefix').trim();
-
-      try {
-        await PrefixModel.findOneAndUpdate(
-          { guildId: interaction.guildId },
-          { prefix: newPrefix },
-          { upsert: true, new: true }
-        );
-        prefixCache.set(interaction.guildId, newPrefix);
-
-        return interaction.reply({
-          content: `✅ Prefix សម្រាប់ Server នេះត្រូវបានប្តូរទៅជា៖ \`${newPrefix}\`\nឧទាហរណ៍៖ \`${newPrefix}play <ឈ្មោះបទចម្រៀង>\``
-        });
-      } catch (err) {
-        console.error(err);
-        return interaction.reply({ content: '❌ មិនអាចប្តូរ Prefix ក្នុង Database បានទេ។', ephemeral: true });
-      }
+  if (interaction.commandName === 'prefix' && interaction.options.getSubcommand() === 'set') {
+    const newPrefix = interaction.options.getString('new_prefix').trim();
+    try {
+      await PrefixModel.findOneAndUpdate({ guildId: interaction.guildId }, { prefix: newPrefix }, { upsert: true });
+      prefixCache.set(interaction.guildId, newPrefix);
+      return interaction.reply(`✅ Prefix បានប្តូរទៅជា៖ \`${newPrefix}\``);
+    } catch (err) {
+      return interaction.reply({ content: '❌ មិនអាចប្តូរ Prefix បានទេ។', ephemeral: true });
     }
   }
 });
 
-// -------------------------------------------------------------
-// 7. MESSAGE PREFIX COMMAND HANDLER
-// -------------------------------------------------------------
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
-
   const prefix = await getPrefix(message.guild.id);
-
   if (!message.content.startsWith(prefix)) return;
 
   const args = message.content.slice(prefix.length).trim().split(/ +/g);
   const command = args.shift()?.toLowerCase();
-
   const voiceChannel = message.member?.voice?.channel;
 
-  // --- MUSIC COMMANDS ---
-  if (command === 'play' || command === 'p') {
-    if (!voiceChannel) {
-      return message.reply('❌ អ្នកត្រូវតែចូល Voice Channel ជាមុនសិន!');
-    }
+  if (['play', 'p'].includes(command)) {
+    if (!voiceChannel) return message.reply('❌ សូមចូល Voice Channel ជាមុនសិន!');
     const query = args.join(' ');
-    if (!query) {
-      return message.reply(`❌ របៀបប្រើ៖ \`${prefix}play <ឈ្មោះបទចម្រៀង ឬ Link YouTube>\``);
-    }
+    if (!query) return message.reply(`❌ របៀបប្រើ៖ \`${prefix}play <ឈ្មោះបទ>\``);
 
-    message.channel.send(`🔍 កំពុងស្វែងរក និងចាក់បទ៖ **${query}**...`);
-    return distube.play(voiceChannel, query, {
-      textChannel: message.channel,
-      member: message.member
-    });
-  }
-
-  if (command === 'skip' || command === 's') {
-    const queue = distube.getQueue(message);
-    if (!queue) return message.reply('❌ គ្មានបទចម្រៀងកំពុងចាក់នោះទេ!');
+    message.channel.send(`🔍 កំពុងស្វែងរក៖ **${query}**...`);
     try {
-      await distube.skip(message);
-      return message.reply('⏭️ បានរំលងទៅបទបន្ទាប់!');
-    } catch {
-      return message.reply('❌ គ្មានបទបន្ទាប់សម្រាប់រំលងទៀតទេ!');
+      distube.play(voiceChannel, query, {
+        textChannel: message.channel,
+        member: message.member
+      });
+    } catch (error) {
+      console.error(error);
+      message.channel.send('❌ មានបញ្ហាក្នុងការចាក់បទនេះ សូមសាកល្បងម្ដងទៀត។');
     }
   }
 
-  if (command === 'stop') {
+  else if (['skip', 's'].includes(command)) {
     const queue = distube.getQueue(message);
-    if (!queue) return message.reply('❌ គ្មានបទចម្រៀងកំពុងចាក់នោះទេ!');
-    await distube.stop(message);
-    return message.reply('⏹️ បានបិទបទចម្រៀង និងលុប Queue ចោលរួចរាល់។');
+    if (!queue) return message.reply('❌ គ្មានបទកំពុងចាក់ទេ!');
+    try { await distube.skip(message); message.reply('⏭️ រំលងបទ!'); } 
+    catch { message.reply('❌ គ្មានបទបន្ទាប់ទេ!'); }
   }
 
-  if (command === 'pause') {
+  else if (command === 'stop') {
     const queue = distube.getQueue(message);
-    if (!queue) return message.reply('❌ គ្មានបទចម្រៀងកំពុងចាក់ទេ។');
-    if (queue.paused) return message.reply('⏸️ បទចម្រៀងកំពុងផ្អាកស្រាប់ហើយ។');
-    distube.pause(message);
-    return message.reply('⏸️ បានផ្អាកបទចម្រៀង។');
+    if (!queue) return message.reply('❌ គ្មានបទកំពុងចាក់ទេ!');
+    distube.stop(message);
+    message.reply('⏹️ បានបញ្ឈប់!');
   }
 
-  if (command === 'resume') {
+  else if (command === 'queue' || command === 'q') {
     const queue = distube.getQueue(message);
-    if (!queue) return message.reply('❌ គ្មានបទចម្រៀងកំពុងចាក់ទេ។');
-    if (!queue.paused) return message.reply('▶️ បទចម្រៀងកំពុងចាក់ស្រាប់ហើយ។');
-    distube.resume(message);
-    return message.reply('▶️ បានបន្តចាក់បទចម្រៀងឡើងវិញ។');
-  }
-
-  if (command === 'queue' || command === 'q') {
-    const queue = distube.getQueue(message);
-    if (!queue) return message.reply('❌ បញ្ជី Queue ទទេស្អាត!');
-
-    const q = queue.songs
-      .slice(0, 10)
-      .map((song, i) => `${i === 0 ? '▶️ **Now Playing:**' : `**${i}.**`} ${song.name} - \`${song.formattedDuration}\``)
-      .join('\n');
-
-    const embed = new EmbedBuilder()
-      .setTitle('🎶 បញ្ជីបទចម្រៀង (Music Queue)')
-      .setDescription(q + (queue.songs.length > 10 ? `\n...និងមាន ${queue.songs.length - 10} បទទៀត។` : ''))
-      .setColor('#5865F2');
-
-    return message.channel.send({ embeds: [embed] });
-  }
-
-  if (command === 'np') {
-    const queue = distube.getQueue(message);
-    if (!queue) return message.reply('❌ គ្មានបទចម្រៀងកំពុងចាក់ទេ។');
-    const song = queue.songs[0];
-    return message.reply(`🎵 កំពុងចាក់បទ៖ **${song.name}** [${song.formattedDuration}]`);
-  }
-
-  if (command === 'volume' || command === 'vol') {
-    const queue = distube.getQueue(message);
-    if (!queue) return message.reply('❌ គ្មានបទចម្រៀងកំពុងចាក់ទេ។');
-    const vol = parseInt(args[0]);
-    if (isNaN(vol) || vol < 0 || vol > 100) {
-      return message.reply('❌ សូមវាយលេខកម្រិតសំឡេងពី 0 ដល់ 100។');
-    }
-    distube.setVolume(message, vol);
-    return message.reply(`🔊 បានកំណត់កម្រិតសំឡេងទៅ **${vol}%**`);
-  }
-
-  if (command === 'help') {
-    const embed = new EmbedBuilder()
-      .setTitle('🎵 ជំនួយ និងរបៀបប្រើប្រាស់ Bot')
-      .setColor('#5865F2')
-      .setDescription(`Prefix បច្ចុប្បន្នលើ Server នេះគឺ៖ \`${prefix}\``)
-      .addFields(
-        { name: 'Slash Command (ប្តូរ Prefix)', value: '`/prefix set <new_prefix>` - កំណត់ Prefix ថ្មី' },
-        { name: 'Music Commands', value: `\`${prefix}play <ឈ្មោះបទ>\` - ចាក់បទចម្រៀង\n\`${prefix}skip\` - រំលងបទចម្រៀង\n\`${prefix}stop\` - បញ្ឈប់ការចាក់\n\`${prefix}pause\` / \`${prefix}resume\` - ផ្អាក / បន្តចាក់\n\`${prefix}queue\` - មើលបញ្ជីបទចម្រៀង\n\`${prefix}np\` - មើលបទកំពុងចាក់\n\`${prefix}volume <0-100>\` - សារេកម្រិតសំឡេង` }
-      );
-    return message.channel.send({ embeds: [embed] });
+    if (!queue) return message.reply('❌ បញ្ជី Queue ទទេ!');
+    const q = queue.songs.slice(0, 10).map((song, i) => `${i === 0 ? '▶️' : `**${i}.**`} ${song.name} - \`${song.formattedDuration}\``).join('\n');
+    message.channel.send({ embeds: [new EmbedBuilder().setTitle('🎶 បញ្ជីបទចម្រៀង').setDescription(q).setColor('#5865F2')] });
   }
 });
 
-// -------------------------------------------------------------
-// 8. DISTUBE EVENT LISTENERS
-// -------------------------------------------------------------
+// =======================================================
+// 6. DISTUBE MUSIC EVENTS (LOGS & ERRORS)
+// =======================================================
 distube
   .on('playSong', (queue, song) => {
-    queue.textChannel?.send(`🎶 កំពុងចាក់បទ៖ **${song.name}** - \`${song.formattedDuration}\` | កម្ម៉ង់ដោយ៖ ${song.user}`);
+    queue.textChannel?.send(`🎶 កំពុងចាក់បទ៖ **${song.name}** \`[${song.formattedDuration}]\` | កម្ម៉ង់ដោយ៖ ${song.user}`);
   })
   .on('addSong', (queue, song) => {
-    queue.textChannel?.send(`✅ បានបន្ថែមបទ **${song.name}** - \`${song.formattedDuration}\` ចូលក្នុង Queue។`);
+    queue.textChannel?.send(`✅ បានបន្ថែមបទ **${song.name}** \`[${song.formattedDuration}]\` ចូល Queue`);
   })
-  .on('error', (channel, e) => {
-    console.error(e);
-    if (channel) channel.send(`❌ Music Error: ${e.message.slice(0, 1900)}`);
+  .on('error', (channel, error) => {
+    console.error('DISTUBE ERROR:', error);
+    // បង្ហាញ Error ច្បាស់ៗចូលក្នុង Discord ដើម្បីងាយស្រួលដឹង
+    if (channel) channel.send(`❌ **បញ្ហាពី YouTube:** \`${error.message.substring(0, 150)}...\` (អាចមកពី YouTube Block លើ Render)`);
+  })
+  .on('disconnect', (queue) => {
+    queue.textChannel?.send('🔌 Bot ត្រូវបានផ្តាច់ចេញពី Voice Channel ហើ់យ។');
   });
 
 client.login(process.env.DISCORD_TOKEN);
